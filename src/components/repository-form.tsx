@@ -116,7 +116,7 @@ export function RepositoryForm({
   appSignInAction,
   canAdministerGitHubWebhooks,
   registrationAppConfigured = false,
-  registrationAppInstallUrl = null,
+  registrationAppInstallUrl = null, registrationAppSlug = null,
 }: RepositoryFormProps) {
   const nextOpeningRowId = useRef(initialValues.openingLabels.length);
   const [values, setValues] = useState<RepositoryFormState>(() => createFormState(initialValues));
@@ -396,7 +396,7 @@ export function RepositoryForm({
           </select>
         </label>
       ) : null}
-      {appRegistration ? <RegistrationAppHelp url={registrationAppInstallUrl} /> : null}
+      {appRegistration ? <RegistrationAppHelp url={registrationAppInstallUrl} slug={registrationAppSlug} /> : null}
 
       {provider === "gitlab" ? (
         <>

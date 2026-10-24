@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { registrationAppConfigured, registrationAppInstallUrl } from "@/lib/github/registration-app-display";
+import { registrationAppConfigured, registrationAppInstall, registrationAppInstallUrl } from "@/lib/github/registration-app-display";
 
 describe("registration App display", () => {
   it.each([undefined, "", "Uppercase", "-app", "app-", "a/b", "a?b", "a b", "a\n"])(
-    "does not link an absent or invalid slug %s", (slug) => expect(registrationAppInstallUrl(slug)).toBeNull(),
+    "does not link an absent or invalid slug %s", (slug) => {
+      expect(registrationAppInstall(slug)).toBeNull();
+      expect(registrationAppInstallUrl(slug)).toBeNull();
+    },
   );
   it.each(["a", "overflow-registration", "app123"])("links valid slug %s", (slug) => {
     expect(registrationAppInstallUrl(slug)).toBe(`https://github.com/apps/${slug}/installations/new`);
+    expect(registrationAppInstall(slug)).toEqual({ slug, url: `https://github.com/apps/${slug}/installations/new` });
   });
   it.each([undefined, ""])("requires both nonempty unprefixed settings (%s)", (missing) => {
     expect(registrationAppConfigured({})).toBe(false);

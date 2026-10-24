@@ -3,6 +3,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RepositoryForm, type RepositoryFormValues } from "@/components/repository-form";
+import { RegistrationAppHelp } from "@/components/registration-app-guidance";
 import { declarations, firstAtRule, pinnedRule, rem, stylesheet } from "../support/stylesheet-rules";
 
 const initialValues: RepositoryFormValues = {
@@ -240,9 +241,15 @@ describe("repository registration form", () => {
     expect(JSON.parse(String(submitCalls[0]!.init.body))).not.toHaveProperty("registrationMethod");
   });
 
+  it("uses the explicit App name independently of its install URL layout", () => {
+    render(<RegistrationAppHelp slug="overflow-registration" url="https://github.com/new-app-install?app=123" />);
+    expect(screen.getByRole("link", { name: "overflow-registration" }))
+      .toHaveAttribute("href", "https://github.com/new-app-install?app=123");
+  });
+
   it.each(["https://github.com/apps/overflow-registration/installations/new", null])(
     "explains configured App registration with install URL %s", (url) => {
-      const { container } = render(<RepositoryForm registrationAppConfigured registrationAppInstallUrl={url} />);
+      const { container } = render(<RepositoryForm registrationAppConfigured registrationAppInstallUrl={url} registrationAppSlug="overflow-registration" />);
       const choice = screen.getByRole("combobox", { name: "GitHub registration method" });
       expect(choice).toHaveValue("oauth_hook");
       fireEvent.change(choice, { target: { value: "app" } });
