@@ -249,14 +249,17 @@ describe("paused full-pass pages", () => {
     expect(await sql`select * from reconciliation_sweep_passes where repository_id = ${f.repositoryId}`).toHaveLength(0);
   });
 
-  it("holds a webhook's dirty work and refunds its job attempt when the shared round is spent", async () => {
+  it("completes webhook dirty work without spending the exhausted sweep budget", async () => {
     const f = await materializeRepositoryFixture(sql);
     const repository = (await f.store.getRepository(f.repositoryId))!;
     const token = randomBytes(24).toString("hex");
     f.store.getGitHubAccessToken = async () => token;
     let sent = 0;
-    const github = new GitHubGateway({ accessToken: token, fetch: async (url) => {
+    const github = new GitHubGateway({ accessToken: token, fetch: async (url, init) => {
       sent++;
+      if (String(url).endsWith("/graphql") && JSON.parse(String(init?.body)).variables.issueNumber !== undefined) {
+        return Response.json({ data: { repository: { issue: null } } });
+      }
       return Response.json(String(url).endsWith("/graphql")
         ? { data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }
         : verifiedRepositoryPayload(repository.githubRepositoryId, repository.ownerName));
@@ -273,11 +276,12 @@ describe("paused full-pass pages", () => {
       values (${f.repositoryId}, 'ISSUE', ${issue.githubIssueId}, ${issue.number})`;
     await f.store.enqueueReconciliationJob(f.repositoryId, "WEBHOOK");
     expect(await runNextReconciliationJob({ store: f.store, now: () => at, scheduleLeaseRenewal: () => () => {},
-      reconcile: (id, options) => reconcileRepository(dependencies, id, options) })).toBe("BUDGET_HELD");
-    expect(sent).toBe(2);
-    expect(await f.store.getDirtyReconciliationSubjects(f.repositoryId)).toHaveLength(1);
+      reconcile: (id, options) => reconcileRepository(dependencies, id, options) })).toBe("RECONCILED");
+    expect(sent).toBeGreaterThan(2);
+    expect(await sql`select spent from reconciliation_sweep_round`).toEqual([{ spent: 3 }]);
+    expect(await f.store.getDirtyReconciliationSubjects(f.repositoryId)).toHaveLength(0);
     expect(await sql`select state, attempt_count, run_after from repository_reconciliation_jobs where repository_id = ${f.repositoryId}`)
-      .toEqual([{ state: "PENDING", attempt_count: 0, run_after: new Date("2030-01-01T06:00:00Z") }]);
+      .toEqual([]);
   });
 
   it("continues unread REST and GraphQL pages after budget exhaustion and a process restart", async () => {

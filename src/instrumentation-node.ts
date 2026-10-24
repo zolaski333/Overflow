@@ -1,4 +1,5 @@
-import { PostgresSweepRoundStore } from "@/lib/fold/sweep-round-store";
+import { PostgresSponsorSweepStore } from "@/lib/fold/sponsor-sweep-store";
+import { readRepositoryHistorySize } from "@/lib/fold/repository-history-count";
 import { PostgresSweepPassStore } from "@/lib/fold/sweep-pass-store";
 import { readSweepRequestBudget } from "@/lib/fold/sweep-request-budget";
 import {
@@ -8,7 +9,6 @@ import {
 import {
   shouldStartReconciliationBackground,
   startReconciliationSweep,
-  sweepReconciliations,
 } from "@/lib/fold/sweep";
 import { FailureLogger } from "@/lib/worker/failure-logger";
 import { DrainSummaryLogger } from "@/lib/logging/drain-summary-logger";
@@ -49,10 +49,10 @@ export async function registerNodejs(): Promise<void> {
   const { pruneExpiredMaintenanceRows } = await import("@/lib/retention/prune");
   const { getSql, getCoordinationSql } = await import("@/lib/db/client");
   const store = new PostgresFoldStore();
-  const sweepRound = new PostgresSweepRoundStore();
+  const sweepRound = new PostgresSponsorSweepStore();
   const sweepPasses = new PostgresSweepPassStore();
   const sweep = {
-    spend: () => sweepRound.spend(new Date(), readSweepRequestBudget(process.env)),
+    spend: (sponsorId: string) => sweepRound.spend(sponsorId, new Date(), readSweepRequestBudget(process.env)),
     openPass: sweepPasses.open.bind(sweepPasses),
     discardPass: sweepPasses.discardByRepository.bind(sweepPasses),
   };
@@ -143,17 +143,10 @@ export async function registerNodejs(): Promise<void> {
       return result;
     },
     runSweep: async () => {
-      const summary = await sweepReconciliations({
-        round: sweepRound,
-        listActiveRepositoryIds: () => store.listActiveRepositoryIds(),
-        enqueue: (repositoryId) => store.enqueueReconciliationJob(repositoryId, "SWEEP"),
-        onFailure: (repositoryId, error) => {
-          // Report the failure while retaining the durable slot: the next poll
-          // retries this repository. Encode the error for the same reason as
-          // the drain's site above.
-          console.error(`Reconciliation sweep failed for repository ${repositoryId}`, errorLogToken(error));
-        },
-      });
+      await sweepRound.measure(new Date(), (repository) => readRepositoryHistorySize(repository, {
+        github: (sponsorId) => store.getGitHubAccessToken(sponsorId), gitlab: resolveForgeToken,
+      }));
+      const summary = await sweepRound.schedule(new Date(), readSweepRequestBudget(process.env));
       // One line per sweep, so an operator can see the repair path running rather
       // than inferring it from the absence of complaints.
       console.info("Reconciliation sweep", summary);

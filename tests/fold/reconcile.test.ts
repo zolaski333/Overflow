@@ -23,6 +23,42 @@ import { inspect, format } from "node:util";
 import { RECORD_MARKER, withRecordBearingPostgresWrite } from "../support/record-bearing-postgres-error";
 
 describe("reconcileRepository", () => {
+  it.each(["WEBHOOK", "SWEEP"] as const)("keeps a diff-only %s incremental outside the sweep budget", async (reason) => {
+    const dependencies = reconciliationDependencies();
+    const repository = (await dependencies.store.getRepository("repository"))!;
+    dependencies.store.getRepository = async () => ({ ...repository, diffOnly: true, catchUpInFlight: false });
+    const at = new Date("2030-01-02T10:00:00Z");
+    dependencies.now = () => at;
+    dependencies.store.getReconciliationEvidence = async () => ({ version: 1, formatVersion: RECONCILIATION_EVIDENCE_FORMAT,
+      checkpoint: at, lastFullPassAt: new Date("2030-01-01"), issues: [], pullRequests: [], omittedOversizedFacts: 0 });
+    const { checkSweepRequestBudget } = await import("@/lib/fold/sweep-request-budget");
+    dependencies.github.getRepositoryById = vi.fn(async () => { await checkSweepRequestBudget(); return verifiedRepository(); });
+    const spend = vi.fn(async () => new Date("2030-01-03"));
+    const openPass = vi.fn(async () => { throw new Error("incremental fold opened a full sweep pass"); });
+    dependencies.sweep = { spend, openPass, discardPass: async () => {} };
+    await expect(reconcileRepository(dependencies, "repository", { reason })).resolves.toMatchObject({ skipped: false });
+    expect(spend).not.toHaveBeenCalled();
+    expect(openPass).not.toHaveBeenCalled();
+    expect(dependencies.github.listIssues).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ since: "2030-01-02T09:59:00.000Z" }));
+  });
+
+  it("charges a diff-only re-derivation to its sponsor's sweep budget", async () => {
+    const dependencies = reconciliationDependencies();
+    const repository = (await dependencies.store.getRepository("repository"))!;
+    dependencies.store.getRepository = async () => ({ ...repository, diffOnly: true });
+    const { checkSweepRequestBudget } = await import("@/lib/fold/sweep-request-budget");
+    dependencies.github.getRepositoryById = vi.fn(async () => { await checkSweepRequestBudget(); return verifiedRepository(); });
+    const reset = new Date("2030-01-03");
+    const spend = vi.fn(async () => reset);
+    dependencies.sweep = { spend, discardPass: async () => {}, openPass: async (input) => ({
+      id: "catch-up", scanStartedAt: input.scanStartedAt, dirtySubjects: input.dirtySubjects,
+      read: async () => undefined, write: async () => {}, complete: async () => {},
+    }) };
+    await expect(reconcileRepository(dependencies, "repository", { reason: "REDERIVATION" })).resolves.toMatchObject({ sweepHeldUntil: reset });
+    expect(spend).toHaveBeenCalledWith(repository.sponsor.id);
+    expect(dependencies.store.beginRun).toHaveBeenCalledWith("repository", { rederivation: true });
+  });
+
   it.each(["WEBHOOK", "REGISTRATION", "REDERIVATION", "OVERRIDE"] as const)("leaves a missing cache for the sweep on %s", async (reason) => {
     const dependencies = reconciliationDependencies();
     dependencies.store.getGitHubAccessToken = async () => null;

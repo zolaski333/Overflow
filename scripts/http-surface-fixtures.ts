@@ -322,6 +322,7 @@ function fixtureAccountExportDocument(): AccountExport {
     closedPrDisputeRequests: { asContributor: [row()], asDecider: [row()], asLandedCommitAuthor: [row()] },
     reconciliationRuns: { asRequester: [row()], asGraphqlCostSponsor: [row()] },
     repositoryReconciliationUsage: [row()],
+    reconciliationSweepRounds: [row()],
     moderationCreditAdjustments: [row()],
     moderationCreditAdjustmentLines: [row()],
     disputeCreditAdjustments: [row()],

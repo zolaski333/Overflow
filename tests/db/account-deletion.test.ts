@@ -664,6 +664,10 @@ describe("account deletion as pseudonymisation", () => {
       insert into repository_reconciliation_usage (sponsor_id, repository_id, debt, measured_at, rate_per_second)
       values (${exporter.id}, ${repositoryId}, 1.5, '2026-09-01T00:00:00Z', 0.5)
     `;
+    await sql`
+      insert into reconciliation_sponsor_sweep_rounds (sponsor_id, window_start, spent, rotation_cursor, next_enqueue_at)
+      values (${exporter.id}, '2026-09-01T00:00:00Z', 3, ${repositoryId}, '2026-09-01T00:05:00Z')
+    `;
     const [adjustment] = await sql<{ id: string }[]>`
       insert into moderation_credit_adjustments (moderation_event_id, calibration_audit_id,
                                                  target_account_id, gap_per_pair, pair_count,

@@ -266,7 +266,7 @@ export class PostgresReconciliationJobStore {
 
   public async failReconciliationJob(jobId: string, leaseToken: string): Promise<boolean> {
     const rows = await this.sql<{ id: string }[]>`
-      update repository_reconciliation_jobs
+      with failed as (update repository_reconciliation_jobs
       set state = ${"FAILED"},
           last_failure_at = now(),
           follow_up_requested = false,
@@ -277,7 +277,10 @@ export class PostgresReconciliationJobStore {
       where id = ${jobId}
         and state = ${"RUNNING"}
         and lease_token = ${leaseToken}
-      returning id
+      returning id, repository_id), catch_up as (
+        update repository_reconciliation_sweep_policy p set catch_up_state = 'FAILED'
+        from failed where p.repository_id = failed.repository_id and p.catch_up_state = 'IN_FLIGHT'
+      ) select id from failed
     `;
     return rows.length === 1;
   }

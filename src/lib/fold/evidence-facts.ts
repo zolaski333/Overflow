@@ -255,7 +255,10 @@ export async function synchronizeReconciliationEvidence(
     );
   }
 
-  await transaction`insert into repository_reconciliation_evidence
+  await transaction`with completed_catch_up as (
+    update repository_reconciliation_sweep_policy set catch_up_state = 'COMPLETED'
+    where repository_id = ${repositoryId} and catch_up_state = 'IN_FLIGHT' and ${synchronization.full}
+  ) insert into repository_reconciliation_evidence
     (repository_id, version, format_version, checkpoint, last_full_pass_at, omitted_oversized_facts)
     values (${repositoryId}, ${(current?.version ?? 0) + 1}, ${RECONCILIATION_EVIDENCE_FORMAT},
       ${synchronization.scanStartedAt}, ${synchronization.full ? synchronization.scanStartedAt : current?.last_full_pass_at ?? null},

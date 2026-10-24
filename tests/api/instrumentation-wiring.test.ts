@@ -2,7 +2,6 @@ import { Console } from "node:console";
 import { fstatSync } from "node:fs";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReconciliationDependencies, ReconciliationRepository } from "@/lib/fold/reconcile";
-import type { ReconciliationJobReason } from "@/lib/fold/reconciliation-jobs";
 import type { ReconciliationWorkerDependencies, ReconciliationWorkerSchedule } from "@/lib/fold/reconciliation-worker";
 import type { ReconciliationSweepSchedule } from "@/lib/fold/sweep";
 import { logField } from "@/lib/webhooks/log-field";
@@ -14,8 +13,8 @@ import { validDifficultyScheme } from "../support/difficulty-scheme";
  * reconciliation, and that the sweep enqueues under its own reason.
  */
 
-const { enqueued, startSweep, startWorker, sweep, drain, resolveToken, markRejected, finalizeRuns, pruneRows, workSql, coordinationSql } = vi.hoisted(() => ({
-  enqueued: [] as { repositoryId: string; reason: string }[],
+const { measure, startSweep, startWorker, sweep, drain, resolveToken, markRejected, finalizeRuns, pruneRows, workSql, coordinationSql } = vi.hoisted(() => ({
+  measure: vi.fn(),
   startSweep: vi.fn(),
   startWorker: vi.fn(),
   sweep: vi.fn(),
@@ -30,6 +29,11 @@ const { enqueued, startSweep, startWorker, sweep, drain, resolveToken, markRejec
 
 vi.mock("@/lib/fold/abandoned-runs", () => ({ finalizeAbandonedRuns: finalizeRuns }));
 vi.mock("@/lib/retention/prune", () => ({ pruneExpiredMaintenanceRows: pruneRows }));
+vi.mock("@/lib/fold/sponsor-sweep-store", () => ({ PostgresSponsorSweepStore: class {
+  measure = measure;
+  schedule = sweep;
+  spend = async () => null;
+} }));
 
 vi.mock("@/lib/fold/reconciliation-worker", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/fold/reconciliation-worker")>()),
@@ -39,7 +43,6 @@ vi.mock("@/lib/fold/reconciliation-worker", async (importActual) => ({
 vi.mock("@/lib/fold/sweep", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/fold/sweep")>()),
   startReconciliationSweep: startSweep,
-  sweepReconciliations: sweep,
 }));
 vi.mock("@/lib/db/client", () => ({ getSql: () => workSql, getCoordinationSql: () => coordinationSql }));
 // The GitLab gateway's default transport refuses a non-public instance and
@@ -80,9 +83,7 @@ vi.mock("@/lib/fold/postgres-store", () => ({
         instanceUrl: "https://gitlab.example.com",
       };
     }
-    async enqueueReconciliationJob(repositoryId: string, reason: ReconciliationJobReason) {
-      enqueued.push({ repositoryId, reason });
-    }
+
   },
 }));
 
@@ -90,10 +91,10 @@ beforeEach(() => {
   // register() must import this file's worker/sweep doubles, never a cached
   // consumer that captured another file's mocks or real background schedulers.
   vi.resetModules();
-  enqueued.length = 0;
+  measure.mockReset().mockResolvedValue(undefined);
   startSweep.mockReset();
   startWorker.mockReset();
-  sweep.mockReset();
+  sweep.mockReset().mockResolvedValue({ attempted: 0, enqueued: 0, failed: 0 });
   drain.mockReset().mockImplementation(async (dependencies: ReconciliationWorkerDependencies) => {
     await dependencies.reconcile("repository-1", { rederive: false, reason: "SWEEP" });
     return [];
@@ -291,10 +292,8 @@ describe("server instrumentation", () => {
     expect(pruneRows).toHaveBeenCalledExactlyOnceWith(workSql);
 
     await schedule.runSweep();
-    const dependencies = sweep.mock.calls[0]![0] as { enqueue(id: string): Promise<unknown> };
-    await dependencies.enqueue("repository-1");
-
-    expect(enqueued).toEqual([{ repositoryId: "repository-1", reason: "SWEEP" }]);
+    expect(measure).toHaveBeenCalledWith(expect.any(Date), expect.any(Function));
+    expect(sweep).toHaveBeenCalledWith(expect.any(Date), 3000);
   });
 
   it("marks the supplying identity with its sponsor when the worker's GitLab read returns 401", async () => {
@@ -354,28 +353,23 @@ describe("server instrumentation log encoding (issue 1042)", () => {
     expect(rendered).toBe(`${logField("Error")}: ${logField(hostilePayload)}`);
   });
 
-  it("renders the sweep's enqueue failure as one encoded single-line token", async () => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  it("counts history with the sponsor's linked credential before scheduling", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     vi.stubEnv("NEXT_PHASE", "");
     vi.stubEnv("OVERFLOW_DISABLE_RECONCILIATION_SWEEP", "");
+    const fetchFn = vi.fn(async () => Response.json({ data: { repository: {
+      id: "gid://gitlab/Project/1", issues: { count: 600 }, pullRequests: { count: 700 },
+    } } }));
+    vi.stubGlobal("fetch", fetchFn);
     const { register } = await import("@/instrumentation");
     await register();
-
-    // The sweep's per-repository hook rides inside the runSweep closure: run
-    // one sweep so the real hook is captured, then invoke it the way the
-    // sweep would.
-    const sweepSchedule = startSweep.mock.calls[0]![0] as ReconciliationSweepSchedule;
-    await sweepSchedule.runSweep();
-    const sweepDependencies = sweep.mock.calls[0]![0] as { onFailure(repositoryId: string, error: unknown): void };
-    sweepDependencies.onFailure("repo-uuid", new Error(hostilePayload));
-
-    const call = errors.mock.calls.find(([first]) => first === "Reconciliation sweep failed for repository repo-uuid");
-    expect(call).toBeDefined();
-    expect(call).toHaveLength(2);
-    const rendered = String(call![1]);
-    expect(rendered).not.toContain("\n");
-    expect(rendered).not.toContain("\u001b");
-    expect(rendered).toBe(`${logField("Error")}: ${logField(hostilePayload)}`);
+    const schedule = startSweep.mock.calls[0]![0] as ReconciliationSweepSchedule;
+    await schedule.runSweep();
+    const count = measure.mock.calls[0]![1] as (repository: unknown) => Promise<number>;
+    expect(await count({ id: "repository-1", sponsor_id: "sponsor-1", owner_name: "group/project",
+      github_repository_id: 1, provider: "gitlab", instance_url: "https://gitlab.example.com" })).toBe(1300);
+    expect(resolveToken).toHaveBeenCalledWith("sponsor-1", "https://gitlab.example.com");
+    const options = fetchFn.mock.calls[0] as unknown as [unknown, RequestInit];
+    expect(new Headers(options[1].headers).get("authorization")).toBe("Bearer token-a");
   });
 });

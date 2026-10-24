@@ -53,6 +53,8 @@ export const FORGE_CREDENTIAL_REJECTED_RUN_MESSAGE =
 // one declaration of where the registered identity lives rather than two.
 export type ReconciliationRepository = RepositoryFoldSnapshot["repository"] & {
   disputePullRequests: GitHubSubject[];
+  diffOnly?: boolean;
+  catchUpInFlight?: boolean;
 };
 
 export type RepositoryUnavailableReason = "NOT_FOUND" | "NOT_PUBLIC" | "IDENTITY_MISMATCH";
@@ -161,10 +163,7 @@ export async function reconcileRepository(
   });
   return dependencies.store.withRepositoryReconciliation(
     repositoryId,
-    () => dependencies.sweep === undefined
-      ? reconcileRepositoryWhileCoordinated(sanitizedDependencies, repositoryId, options)
-      : withSweepRequestBudget(() => dependencies.sweep!.spend(),
-        () => reconcileRepositoryWhileCoordinated(sanitizedDependencies, repositoryId, options)),
+    () => reconcileRepositoryWhileCoordinated(sanitizedDependencies, repositoryId, options),
   );
 }
 
@@ -264,8 +263,10 @@ async function reconcileRepositoryWhileCoordinated(
     }
   }
 
-  const allowsFull = options?.reason === undefined || options.reason === "SWEEP";
-  const rederive = allowsFull && (options?.rederive === true
+  const diffRederivation = repository.diffOnly === true && (options?.reason === "REDERIVATION" || options?.rederive === true);
+  const allowsFull = options?.reason === undefined || diffRederivation
+    || (options.reason === "SWEEP" && (!repository.diffOnly || repository.catchUpInFlight === true));
+  const rederive = allowsFull && (options?.rederive === true || diffRederivation
     || await dependencies.store.hasDerivedRowsBelowFoldRevision(repositoryId, FOLD_REVISION));
   const runId = await dependencies.store.beginRun(repositoryId, { rederivation: rederive });
   let failedCost: Omit<ReconciliationCostCharge, "completedAt"> | null = null;
@@ -281,7 +282,7 @@ async function reconcileRepositoryWhileCoordinated(
       return noDeltaSummary(repositoryId, runId);
     }
 
-    const collected = await withGraphqlFoldCost<ReconciliationSummary>(async (readCost) => {
+    const collect = () => withGraphqlFoldCost<ReconciliationSummary>(async (readCost) => {
       try {
         // Advance to scan start only after successful materialization. Completion
         // time could skip changes made while these upstream reads were in flight.
@@ -498,6 +499,9 @@ async function reconcileRepositoryWhileCoordinated(
         throw error;
       }
     });
+    const budgeted = options?.reason !== undefined && (diffRederivation || (options.reason === "SWEEP" && allowsFull));
+    const collected = dependencies.sweep !== undefined && budgeted
+      ? await withSweepRequestBudget(() => dependencies.sweep!.spend(repository.sponsor.id), collect) : await collect();
     return collected.value;
   } catch (error) {
     if (error instanceof SweepBudgetSpent) {

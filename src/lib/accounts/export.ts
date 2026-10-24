@@ -89,6 +89,7 @@ export type AccountExport = {
   closedPrDisputeRequests: { asContributor: AccountExportRow[]; asDecider: AccountExportRow[]; asLandedCommitAuthor: AccountExportRow[] };
   reconciliationRuns: { asRequester: AccountExportRow[]; asGraphqlCostSponsor: AccountExportRow[] };
   repositoryReconciliationUsage: AccountExportRow[];
+  reconciliationSweepRounds: AccountExportRow[];
   moderationCreditAdjustments: AccountExportRow[];
   moderationCreditAdjustmentLines: AccountExportRow[];
   disputeCreditAdjustments: AccountExportRow[];
@@ -185,6 +186,7 @@ export const userForeignKeyExports: readonly UserForeignKeyExportEntry[] = [
     orderBy: ["measured_at", "repository_id"],
   },
   { table: "moderation_credit_adjustments", column: "target_account_id", path: "moderationCreditAdjustments", kind: "jsonb", orderBy: ["created_at", "id"] },
+  { table: "reconciliation_sponsor_sweep_rounds", column: "sponsor_id", path: "reconciliationSweepRounds", kind: "jsonb", orderBy: ["sponsor_id"] },
   { table: "moderation_credit_adjustment_lines", column: "creditor_id", path: "moderationCreditAdjustmentLines", kind: "jsonb", orderBy: ["adjustment_id", "settlement_id"] },
   { table: "dispute_credit_adjustments", column: "target_account_id", path: "disputeCreditAdjustments", kind: "jsonb", orderBy: ["created_at", "id"] },
   { table: "dispute_credit_adjustment_lines", column: "creditor_id", path: "disputeCreditAdjustmentLines", kind: "jsonb", orderBy: ["adjustment_id", "id"] },
@@ -388,6 +390,7 @@ export async function exportAccount(
         closedPrDisputeRequests: { asContributor: [], asDecider: [], asLandedCommitAuthor: [] },
         reconciliationRuns: { asRequester: [], asGraphqlCostSponsor: [] },
         repositoryReconciliationUsage: [],
+        reconciliationSweepRounds: [],
         moderationCreditAdjustments: [],
         moderationCreditAdjustmentLines: [],
         disputeCreditAdjustments: [],

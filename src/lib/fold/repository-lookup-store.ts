@@ -7,6 +7,7 @@ import type { RepositoryCoordinator } from "@/lib/fold/repository-coordination";
 import type { FoldForgeIdentity, FoldUser } from "@/lib/fold/repository-fold";
 import { logField } from "@/lib/webhooks/log-field";
 import type { RegisteredRepository } from "@/lib/repositories/register";
+import { configuredDiffOnlyBacklog } from "@/lib/fold/sponsor-sweep-policy";
 
 type RepositoryRow = {
   id: string;
@@ -23,6 +24,8 @@ type RepositoryRow = {
   sponsor_enforcement_state: EnforcementState;
   sponsor_moderation_events: unknown;
   dispute_pull_requests: { id: string; number: number }[];
+  diff_only: boolean;
+  catch_up_in_flight: boolean;
 };
 
 type UserRow = {
@@ -103,6 +106,12 @@ export class PostgresRepositoryLookupStore {
         repositories.difficulty_scheme,
         repositories.provider,
         repositories.instance_url,
+        coalesce((select sum(coalesce(policy.history_size, 0))
+          from registered_repositories sibling left join repository_reconciliation_sweep_policy policy
+            on policy.repository_id = sibling.id
+          where sibling.active and sibling.sponsor_id = repositories.sponsor_id), 0) > ${configuredDiffOnlyBacklog()} as diff_only,
+        exists (select 1 from repository_reconciliation_sweep_policy policy
+          where policy.repository_id = repositories.id and policy.catch_up_state = 'IN_FLIGHT') as catch_up_in_flight,
         sponsors.id as sponsor_id,
         sponsors.github_user_id as sponsor_github_user_id,
         sponsors.github_login as sponsor_github_login,
@@ -285,6 +294,8 @@ function toReconciliationRepository(
     difficultySchemeVersions,
     provider: row.provider ?? "github",
     instanceUrl: row.instance_url,
+    diffOnly: row.diff_only,
+    catchUpInFlight: row.catch_up_in_flight,
     disputePullRequests: row.dispute_pull_requests.map(pr => ({ id: toSafeInteger(pr.id), number: pr.number })),
     sponsor: {
       id: row.sponsor_id,
